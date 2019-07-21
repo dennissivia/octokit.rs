@@ -1,0 +1,7 @@
+[package]
+name = "octokit"
+version = "0.0.1"
+authors = ["Dennis Sivia <dev@d-coded.de>"]
+edition = "2018"
+
+[dependencies]
