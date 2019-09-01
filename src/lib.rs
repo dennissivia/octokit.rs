@@ -1,9 +1,17 @@
 // use chrono::{DateTime, NaiveDateTime, Utc};
+use openssl;
 use reqwest::header::{AUTHORIZATION, CONTENT_TYPE, LINK, USER_AGENT};
 use reqwest::Response;
 use serde::{Deserialize, Serialize};
 use std::error::Error;
 use std::fmt;
+use std::fs::File;
+use std::io::prelude::*;
+use std::time::{SystemTime, UNIX_EPOCH};
+
+extern crate jsonwebtoken as jwt;
+use jwt::{decode, encode, Algorithm, Header, Validation};
+
 // use serde_json::{Error, Result};
 
 type ID = u64;
@@ -21,6 +29,11 @@ enum OwnerType {
     User,
     Bot,
     Organization,
+}
+
+#[derive(Serialize, Deserialize, Debug)]
+pub struct ApiError {
+    pub message: String,
 }
 
 #[derive(Serialize, Deserialize, Debug)]
@@ -119,6 +132,19 @@ struct CreateComment {
 pub struct OctokitError {
     details: String,
 }
+#[derive(Serialize, Deserialize, Debug)]
+pub struct App {
+    id: ID,
+    installations_count: usize,
+    node_id: GRID,
+    name: String,
+    description: String,
+    external_url: URI,
+    html_url: URI,
+    created_at: DateTime,
+    updated_at: DateTime,
+    //owner: Owner
+}
 
 impl OctokitError {
     fn new(msg: &str) -> OctokitError {
@@ -152,13 +178,25 @@ impl From<reqwest::Error> for OctokitError {
     }
 }
 
-fn perform_get(token: &String, url: URI) -> Result<Response, reqwest::Error> {
+fn perform_get(
+    token: &String,
+    url: URI,
+    token_type: AuthTokenType,
+) -> Result<Response, reqwest::Error> {
     let client = reqwest::Client::new();
+    let token_prefix = match token_type {
+        AuthTokenType::Token => "token",
+        AuthTokenType::Bearer => "Bearer",
+    };
+
     client
         .get(&url[..])
         .header(USER_AGENT, "Octokit/Rust v0.1.0")
         .header(CONTENT_TYPE, "application/vnd.github.antiope-preview+json")
-        .header(AUTHORIZATION, String::from(format!("token {}", token)))
+        .header(
+            AUTHORIZATION,
+            String::from(format!("{} {}", token_prefix, token)),
+        )
         .send()
 }
 
@@ -246,7 +284,7 @@ pub fn get_review_comments(
         "https://api.github.com/repos/{}/pulls/{}/comments",
         nwo, pull_number
     );
-    perform_get(&token, url);
+    perform_get(&token, url, AuthTokenType::Token);
     None
 }
 
@@ -266,7 +304,7 @@ fn get_pull_requests(token: &String, nwo: &String) {}
 // GET /repos/:owner/:repo/pulls/comments
 pub fn get_all_review_comments(token: &String, nwo: &NameWithOwner) -> Option<Vec<ReviewComment>> {
     let url: String = format!("https://api.github.com/repos/{}/comments", nwo);
-    let result = perform_get(&token, url);
+    let result = perform_get(&token, url, AuthTokenType::Token);
 
     match result {
         Ok(mut response) => {
@@ -286,10 +324,104 @@ pub fn get_all_review_comments(token: &String, nwo: &NameWithOwner) -> Option<Ve
     }
 }
 
+type GitHubAppId = String;
+
+/// Well-known JWT claims
+///    iss (issuer): Issuer of the JWT
+///    exp (expiration time): Time after which the JWT expires
+///    iat (issued at time): Time at which the JWT was issued; can be used to determine age of the JWT
+///    sub (subject): Subject of the JWT (the user)
+///    aud (audience): Recipient for which the JWT is intended
+///    nbf (not before time): Time before which the JWT must not be accepted for processing
+///    jti (JWT ID): Unique identifier; can be used to prevent the JWT from being replayed (allows a token to be used only once)
+// Implement the minimum required by GitHub (for now)
+#[derive(Debug, Serialize, Deserialize)]
+struct Claims {
+    iat: u64,
+    exp: u64,
+    iss: GitHubAppId,
+}
+
+enum AuthTokenType {
+    Token,
+    Bearer,
+}
+
+/// See: https://developer.github.com/apps/building-github-apps/authenticating-with-github-apps/#authenticating-as-a-github-app
+/// GitHub expects RS256 encoded JWTs
+/// ISS has to be the APP_ID
+/// Private key is in PKCS#1 RSAPrivateKey format
+/// https://developer.github.com/apps/building-github-apps/authenticating-with-github-apps/#generating-a-private-key
+pub fn generate_jwt(path: &str, app_id: &String) -> std::result::Result<String, String> {
+    println!("opening event payload file: {}", path);
+    let mut file = File::open(path).map_err(|_| "failed to open file".to_string())?;
+    let mut contents = String::new();
+    file.read_to_string(&mut contents)
+        .map_err(|_| "Failed t read from file".to_string())?;
+
+    let now = SystemTime::now();
+    let iat = now
+        .duration_since(UNIX_EPOCH)
+        .expect("Time went backwards")
+        .as_secs();
+    let exp = iat + 60 * 10; // 10 minute validity
+    let iss = app_id;
+
+    //    openssl.private_key_from_pem
+    let key = openssl::rsa::Rsa::private_key_from_pem(contents.as_bytes())
+        .map_err(|_| "Openssl died".to_string())?;
+    let der = key
+        .private_key_to_der()
+        .map_err(|_| "creating der failed")?;
+
+    let claims = Claims {
+        iat: iat,
+        exp: exp,
+        iss: iss.to_string(),
+    };
+    let mut header = Header::default();
+    header.alg = Algorithm::RS256;
+    let token = encode(&header, &claims, der.as_ref()).map_err(|_| "JWT encoding failed")?;
+
+    return Ok(token);
+}
+
+pub fn get_app(token: &String) -> Option<App> {
+    //    curl -i -H "Authorization: Bearer YOUR_JWT" -H "Accept: application/vnd.github.machine-man-preview+json" https://api.github.com/app
+    let result = perform_get(
+        &token,
+        "https://api.github.com/app".to_string(),
+        AuthTokenType::Bearer,
+    );
+    //    println!("result is: {:?}", result);
+    match result {
+        Ok(mut response) => {
+            if response.status() == reqwest::StatusCode::OK {
+                let app: App = response.json().unwrap();
+                return Some(app);
+            } else if response.status() == reqwest::StatusCode::UNAUTHORIZED {
+                let body: ApiError = response.json().expect("Its all broken");
+                println!("{:?}", body);
+                return None;
+            } else {
+                let status = response.headers().get("status").unwrap();
+                println!("Request failed with status: {:?}", status);
+                return None;
+            }
+        }
+        Err(error) => {
+            println!("request failed. How do we get the error payload?");
+            return None;
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     #[test]
     fn it_works() {
         assert_eq!(2 + 2, 4);
     }
+    // Write tests for JWT logic (no API mocks needed)
+    // Write tests for error cases for non-API functions
 }
