@@ -1,8 +1,9 @@
 // use chrono::{DateTime, NaiveDateTime, Utc};
 use openssl;
-use reqwest::header::{AUTHORIZATION, CONTENT_TYPE, LINK, USER_AGENT};
+use reqwest::header::{ACCEPT, AUTHORIZATION, CONTENT_TYPE, LINK, USER_AGENT};
 use reqwest::Response;
 use serde::{Deserialize, Serialize};
+use std::collections::HashMap;
 use std::error::Error;
 use std::fmt;
 use std::fs::File;
@@ -29,6 +30,39 @@ enum OwnerType {
     User,
     Bot,
     Organization,
+}
+
+type Email = String;
+
+enum GithubEvent {
+    Integration,
+    Installation,
+}
+
+enum GithubEventAction {
+    Created,
+}
+
+enum ApiPreviews {
+    Antiope,
+    MachineMan,
+}
+
+impl fmt::Display for ApiPreviews {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            ApiPreviews::Antiope => write!(f, "{}", "application/vnd.github.antiope-preview+json"),
+            ApiPreviews::MachineMan => {
+                write!(f, "{}", "application/vnd.github.machine-man-preview+json")
+            }
+        }
+    }
+}
+
+impl ApiPreviews {
+    fn to_media_type(&self) -> String {
+        self.to_string()
+    }
 }
 
 #[derive(Serialize, Deserialize, Debug)]
@@ -81,7 +115,7 @@ pub struct Repository {
 }
 
 // mod webhook_payloads {
-#[derive(Serialize, Deserialize, Debug)]
+#[derive(Deserialize, Debug)]
 struct CommentPayload {
     pub action: String,
     pub issue: Issue,
@@ -89,11 +123,178 @@ struct CommentPayload {
     pub comment: IssueComment,
 }
 
-#[derive(Serialize, Deserialize, Debug)]
+#[derive(Deserialize, Debug)]
+pub struct CommitAuthor {
+    pub name: String,
+    pub email: Email,
+}
+
+/// Used for web-flows etc, that are on behalf of a given user
+type Commiter = CommitAuthor;
+
+#[derive(Deserialize, Debug)]
+pub struct Commit {
+    pub id: CommitSha,
+    pub tree_id: CommitSha,
+    pub distinct: bool,
+    pub message: String,
+    pub author: CommitAuthor,
+    pub committer: Commiter,
+    pub url: URI,
+}
+
+#[derive(Deserialize, Debug)]
+pub struct Pusher {
+    pub name: String,
+    pub email: Email,
+}
+
+#[derive(Deserialize, Debug)]
+pub struct PushInstallation {
+    pub id: ID,
+    pub node_id: GRID,
+}
+
+#[derive(Deserialize, Debug)]
+pub struct PushPayload {
+    //ref: String,
+    pub before: CommitSha,
+    pub after: CommitSha,
+    pub created: bool,
+    pub deleted: bool,
+    pub forced: bool,
+    pub base_ref: Option<String>,
+    pub compare: URI,
+    pub commits: Vec<Commit>,
+    pub head_commit: Option<Commit>,
+    pub repository: Repository,
+    pub pusher: Pusher,
+    pub sender: User,
+    pub installation: Option<PushInstallation>,
+}
+
+#[derive(Deserialize, Debug)]
 struct IssuePayload {
     pub issue: Issue,
 }
-// }
+
+#[derive(Serialize, Deserialize, Debug)]
+// The values are lower case to match the exact string GH is sending
+pub enum PermissionGrant {
+    read,  // GH read-only permission
+    write, // GH read-write permission
+}
+
+// TODO consider making this a hashmap if no-access is implemented by omitting the key
+#[derive(Serialize, Deserialize, Debug)]
+pub struct InstallationPermissions {
+    pub administration: Option<PermissionGrant>,
+    pub packages: Option<PermissionGrant>,
+    pub statuses: Option<PermissionGrant>,
+    pub issues: Option<PermissionGrant>,
+    pub deployments: Option<PermissionGrant>,
+    pub contents: Option<PermissionGrant>,
+    pub checks: Option<PermissionGrant>,
+    pub vulnerability_alerts: Option<PermissionGrant>,
+    pub pull_requests: Option<PermissionGrant>,
+    pub pages: Option<PermissionGrant>,
+    pub metadata: Option<PermissionGrant>,
+    pub app_config: Option<PermissionGrant>,
+}
+
+#[derive(Serialize, Deserialize, Debug)]
+pub struct PullRequest {
+    pub id: ID,
+    pub url: URI,
+    pub number: u64,
+    pub state: String,
+    pub locked: bool,
+    pub title: String,
+    pub body: String,
+    pub user: User,
+    pub node_id: GRID,
+    pub html_url: URI,
+    pub diff_url: URI,
+    pub patch_url: URI,
+    pub issue_url: URI,
+    pub commits_url: URI,
+    pub review_comments_url: URI,
+    pub review_comment_url: URI,
+    pub comments_url: URI,
+    pub statuses_url: URI,
+}
+
+#[derive(Deserialize, Debug)]
+pub struct GithubApp {
+    pub id: ID,
+    pub slug: String,
+    pub node_id: GRID,
+    pub owner: User,
+    pub name: String,
+    pub description: String,
+    pub external_url: URI,
+    pub html_url: URI,
+    pub created_at: DateTime,
+    pub updated_at: DateTime,
+    //    pub permissions: HashMap<String, PermissionGrant>,
+    pub permissions: InstallationPermissions,
+    pub evens: Vec<String>,
+    pub installations_count: Option<u64>, // only included in authenticated calls
+}
+
+// TODO create CheckSuite status stuff
+#[derive(Deserialize, Debug)]
+pub struct CheckSuite {
+    pub id: ID,
+    pub node_id: GRID,
+    pub head_branch: String,
+    pub head_sha: CommitSha,
+    pub status: String,
+    pub conclusion: String,
+    pub url: URI,
+    pub before: CommitSha,
+    pub after: CommitSha,
+    pub pull_requests: Vec<PullRequest>,
+    pub app: GithubApp,
+    pub repository: Repository,
+}
+
+#[derive(Serialize, Deserialize, Debug)]
+pub struct InstallationRepository {
+    pub id: ID,
+    pub node_id: ID,
+    pub name: String,
+    pub full_name: String,
+    pub private: bool,
+}
+
+#[derive(Serialize, Deserialize, Debug)]
+pub struct Installation {
+    pub id: ID,
+    //pub account: User, // OWNER?
+    pub repository_selection: String,
+    pub access_tokens_url: URI,
+    pub repositories_url: URI,
+    pub html_url: URI,
+    pub app_id: ID,
+    pub target_id: ID,
+    pub target_type: String, // User .. OWNER?
+    pub permissions: InstallationPermissions,
+    pub events: Vec<String>,
+    //    pub created_at: DateTime, // Ignore! because they are delivered as timestamps
+    //    pub updated_at: DateTime, // Ignore! because they are delivered as timestamps
+    pub single_file_name: Option<String>,
+}
+
+#[derive(Deserialize, Debug)]
+pub struct InstallationPayload {
+    // FIXME create event-action enum
+    pub action: String,
+    pub installation: Installation,
+    // in case of deleted installs there is no repository key
+    pub repositories: Option<Vec<InstallationRepository>>,
+    pub sender: User,
+}
 
 // TODO create Review and ReviewComment payloads
 // struct Review
@@ -132,18 +333,14 @@ struct CreateComment {
 pub struct OctokitError {
     details: String,
 }
-#[derive(Serialize, Deserialize, Debug)]
-pub struct App {
-    id: ID,
-    installations_count: usize,
-    node_id: GRID,
-    name: String,
-    description: String,
-    external_url: URI,
-    html_url: URI,
-    created_at: DateTime,
-    updated_at: DateTime,
-    //owner: Owner
+
+#[derive(Deserialize, Debug)]
+pub struct InstallationToken {
+    pub token: String,
+    pub expires_at: DateTime,
+    pub permissions: InstallationPermissions,
+    // omitted if repository_ids is not set in the request
+    pub repositories: Option<Vec<Repository>>,
 }
 
 impl OctokitError {
@@ -184,18 +381,14 @@ fn perform_get(
     token_type: AuthTokenType,
 ) -> Result<Response, reqwest::Error> {
     let client = reqwest::Client::new();
-    let token_prefix = match token_type {
-        AuthTokenType::Token => "token",
-        AuthTokenType::Bearer => "Bearer",
-    };
 
     client
         .get(&url[..])
         .header(USER_AGENT, "Octokit/Rust v0.1.0")
-        .header(CONTENT_TYPE, "application/vnd.github.antiope-preview+json")
+        .header(ACCEPT, "application/vnd.github.antiope-preview+json")
         .header(
             AUTHORIZATION,
-            String::from(format!("{} {}", token_prefix, token)),
+            String::from(format!("{} {}", token_type, token)),
         )
         .send()
 }
@@ -215,13 +408,22 @@ fn perform_post<T: Serialize>(
     token: &String,
     url: URI,
     data: &T,
+    token_type: AuthTokenType,
+    media_type: String,
 ) -> Result<Response, reqwest::Error> {
+    println!(
+        "media type is: {}, token_type is: {}",
+        media_type, token_type
+    );
     let client = reqwest::Client::new();
     let result = client
         .post(&url[..])
         .header(USER_AGENT, "Octokit/Rust v0.1.0")
-        .header(CONTENT_TYPE, "application/vnd.github.antiope-preview+json")
-        .header(AUTHORIZATION, String::from(format!("token {}", token)))
+        .header(ACCEPT, media_type)
+        .header(
+            AUTHORIZATION,
+            String::from(format!("{} {}", token_type, token)),
+        )
         .json(&data)
         .send();
 
@@ -258,7 +460,13 @@ pub fn create_issue_comment(
         repo_name, issue_number
     );
 
-    let res = perform_post(&token, url, &new_comment);
+    let res = perform_post(
+        &token,
+        url,
+        &new_comment,
+        AuthTokenType::Token,
+        ApiPreviews::Antiope.to_media_type(),
+    );
     match res {
         Ok(mut response) => {
             println!("Request succeeded {:?}", response);
@@ -324,7 +532,7 @@ pub fn get_all_review_comments(token: &String, nwo: &NameWithOwner) -> Option<Ve
     }
 }
 
-type GitHubAppId = String;
+type GithubAppId = String;
 
 /// Well-known JWT claims
 ///    iss (issuer): Issuer of the JWT
@@ -334,26 +542,35 @@ type GitHubAppId = String;
 ///    aud (audience): Recipient for which the JWT is intended
 ///    nbf (not before time): Time before which the JWT must not be accepted for processing
 ///    jti (JWT ID): Unique identifier; can be used to prevent the JWT from being replayed (allows a token to be used only once)
-// Implement the minimum required by GitHub (for now)
+// Implement the minimum required by Github (for now)
 #[derive(Debug, Serialize, Deserialize)]
 struct Claims {
     iat: u64,
     exp: u64,
-    iss: GitHubAppId,
+    iss: GithubAppId,
 }
 
 enum AuthTokenType {
     Token,
-    Bearer,
+    JWT,
+}
+
+impl fmt::Display for AuthTokenType {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            AuthTokenType::Token => write!(f, "{}", "token"),
+            AuthTokenType::JWT => write!(f, "{}", "Bearer"),
+        }
+    }
 }
 
 /// See: https://developer.github.com/apps/building-github-apps/authenticating-with-github-apps/#authenticating-as-a-github-app
-/// GitHub expects RS256 encoded JWTs
+/// Github expects RS256 encoded JWTs
 /// ISS has to be the APP_ID
 /// Private key is in PKCS#1 RSAPrivateKey format
 /// https://developer.github.com/apps/building-github-apps/authenticating-with-github-apps/#generating-a-private-key
-pub fn generate_jwt(path: &str, app_id: &String) -> std::result::Result<String, String> {
-    println!("opening event payload file: {}", path);
+pub fn create_jwt(path: &str, app_id: &String) -> std::result::Result<String, String> {
+    println!("opening secret key file: {}", path);
     let mut file = File::open(path).map_err(|_| "failed to open file".to_string())?;
     let mut contents = String::new();
     file.read_to_string(&mut contents)
@@ -386,19 +603,186 @@ pub fn generate_jwt(path: &str, app_id: &String) -> std::result::Result<String, 
     return Ok(token);
 }
 
-pub fn get_app(token: &String) -> Option<App> {
-    //    curl -i -H "Authorization: Bearer YOUR_JWT" -H "Accept: application/vnd.github.machine-man-preview+json" https://api.github.com/app
+///  curl -i -H "Authorization: Bearer YOUR_JWT"
+///          -H "Accept: application/vnd.github.machine-man-preview+json"
+///          https://api.github.com/app
+pub fn get_app(token: &String) -> Option<GithubApp> {
     let result = perform_get(
         &token,
         "https://api.github.com/app".to_string(),
-        AuthTokenType::Bearer,
+        AuthTokenType::JWT,
     );
     //    println!("result is: {:?}", result);
     match result {
         Ok(mut response) => {
             if response.status() == reqwest::StatusCode::OK {
-                let app: App = response.json().unwrap();
+                let app: GithubApp = response.json().unwrap();
                 return Some(app);
+            } else if response.status() == reqwest::StatusCode::UNAUTHORIZED {
+                let body: ApiError = response.json().expect("Its all broken");
+                println!("{:?}", body);
+                return None;
+            } else {
+                let status = response.headers().get("status").unwrap();
+                println!("Request failed with status: {:?}", status);
+                return None;
+            }
+        }
+        Err(error) => {
+            println!("request failed. How do we get the error payload?");
+            return None;
+        }
+    }
+}
+
+/// GET /app/installations/:installation_id
+fn get_installation() -> () {}
+
+#[derive(Serialize, Debug)]
+struct CreateInstallationToken {
+    //    repository_ids: Vec<ID>,
+    permissions: HashMap<String, PermissionGrant>,
+}
+
+#[derive(Serialize, Debug)]
+struct CreateCheckSuite {
+    head_sha: CommitSha,
+}
+
+///  POST /repos/:owner/:repo/check-suites
+pub fn create_check_suite(
+    token: &String,
+    nwo: &NameWithOwner,
+    sha: CommitSha,
+) -> Option<CheckSuite> {
+    let data = CreateCheckSuite {
+        head_sha: sha.to_string(),
+    };
+
+    let result = perform_post(
+        &token,
+        format!("https://api.github.com/repos/{}/check-suites", nwo),
+        &data,
+        AuthTokenType::Token,
+        ApiPreviews::Antiope.to_media_type(),
+    );
+
+    println!("result is: {:?}", result);
+    match result {
+        Ok(mut response) => {
+            if response.status() == reqwest::StatusCode::OK {
+                let check_suite: CheckSuite = response.json().unwrap();
+                return Some(check_suite);
+            } else if response.status() == reqwest::StatusCode::UNAUTHORIZED {
+                let body: ApiError = response.json().expect("Its all broken");
+                println!("{:?}", body);
+                return None;
+            } else {
+                let status = response.headers().get("status").unwrap();
+                println!("Request failed with status: {:?}", status);
+                return None;
+            }
+        }
+        Err(error) => {
+            println!("request failed. How do we get the error payload?");
+            return None;
+        }
+    }
+}
+
+#[derive(Serialize, Debug)]
+pub struct CreateCheckRun {
+    pub name: String,
+    pub head_sha: CommitSha,
+    //    status: Option<String>,
+    //    conclusion: Option<String>,
+}
+
+#[derive(Deserialize, Debug)]
+pub struct CheckRun {
+    pub id: ID,
+    pub head_sha: CommitSha,
+    pub node_id: GRID,
+    pub external_id: String,
+    pub url: URI,
+    pub html_url: URI,
+    pub details_url: URI,
+    pub status: String,
+    pub conclusion: Option<String>,
+    pub started_at: DateTime,
+    pub completed_at: Option<DateTime>,
+}
+
+///  POST /repos/:owner/:repo/check-runs
+pub fn create_check_run(token: &String, nwo: &NameWithOwner, sha: CommitSha) -> Option<CheckRun> {
+    let data = CreateCheckRun {
+        name: String::from("Example Check-Run"),
+        head_sha: sha.to_string(),
+    };
+
+    let result = perform_post(
+        &token,
+        format!("https://api.github.com/repos/{}/check-runs", nwo),
+        &data,
+        AuthTokenType::Token,
+        ApiPreviews::Antiope.to_media_type(),
+    );
+
+    println!("result is: {:?}", result);
+    match result {
+        Ok(mut response) => {
+            if response.status() == reqwest::StatusCode::CREATED {
+                let check_run: CheckRun = response.json().unwrap();
+                return Some(check_run);
+            } else if response.status() == reqwest::StatusCode::UNAUTHORIZED {
+                let body: ApiError = response.json().expect("Its all broken");
+                println!("{:?}", body);
+                return None;
+            } else {
+                let status = response.headers().get("status").unwrap();
+                println!("Request failed with status: {:?}", status);
+                return None;
+            }
+        }
+        Err(error) => {
+            println!("request failed. How do we get the error payload?");
+            return None;
+        }
+    }
+}
+
+/// POST /app/installations/:installation_id/access_tokens
+pub fn create_installation_token(jwt: String, installation_id: ID) -> Option<String> {
+    //    let permissions = [("checks".to_string(), PermissionGrant::write)] .iter() .cloned() .collect();
+    let mut permissions = HashMap::new();
+    permissions.insert(String::from("checks"), PermissionGrant::write);
+
+    //    let repository_ids = vec![];
+
+    let data = CreateInstallationToken {
+        //        repository_ids,
+        permissions,
+    };
+
+    let result = perform_post(
+        &jwt,
+        format!(
+            "https://api.github.com/app/installations/{}/access_tokens",
+            installation_id
+        ),
+        &data,
+        AuthTokenType::JWT,
+        ApiPreviews::MachineMan.to_media_type(),
+    );
+
+    println!("result is: {:?}", result);
+    match result {
+        Ok(mut response) => {
+            // We expect a 201
+            if response.status() == reqwest::StatusCode::CREATED {
+                let token_data: InstallationToken = response.json().unwrap();
+                println!("{:?}", token_data);
+                return Some(token_data.token);
             } else if response.status() == reqwest::StatusCode::UNAUTHORIZED {
                 let body: ApiError = response.json().expect("Its all broken");
                 println!("{:?}", body);
