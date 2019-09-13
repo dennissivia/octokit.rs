@@ -10,23 +10,24 @@ use std::fs::File;
 use std::io::prelude::*;
 use std::time::{SystemTime, UNIX_EPOCH};
 
-extern crate jsonwebtoken as jwt;
-use jwt::{decode, encode, Algorithm, Header, Validation};
-
-// use serde_json::{Error, Result};
+use jsonwebtoken::{encode, Algorithm, Header};
 
 type ID = u64;
 type CommitSha = String;
+
 // TODO replace with proper URI type later
 type URI = String;
+
 // TODO replace with chrone::DateTime
 type DateTime = String;
-// Global Relay ID for GQL queries with Node ID
-type GRID = String;
-type NameWithOwner = String;
-type AuthToken = String;
 
-enum OwnerType {
+/// Global Relay ID for GQL queries with Node ID
+type GRID = String;
+
+type NameWithOwner = String;
+
+#[derive(Serialize, Deserialize, Debug)]
+pub enum OwnerType {
     User,
     Bot,
     Organization,
@@ -34,13 +35,18 @@ enum OwnerType {
 
 type Email = String;
 
+#[derive(Serialize, Deserialize, Debug)]
 enum GithubEvent {
     Integration,
     Installation,
 }
 
-enum GithubEventAction {
+#[derive(Serialize, Deserialize, Debug)]
+#[serde(rename_all = "lowercase")]
+pub enum GithubEventAction {
     Created,
+    Removed,
+    Deleted,
 }
 
 enum ApiPreviews {
@@ -75,7 +81,7 @@ pub struct User {
     pub id: ID,
     pub login: String,
     pub node_id: GRID,
-    // type: OwnerType,
+    r#type: OwnerType,
     site_admin: bool,
     // avatar_url: URI,
     // TODO consider a hypermedia mixin or something
@@ -117,7 +123,7 @@ pub struct Repository {
 // mod webhook_payloads {
 #[derive(Deserialize, Debug)]
 struct CommentPayload {
-    pub action: String,
+    pub action: GithubEventAction,
     pub issue: Issue,
     pub repository: Repository,
     pub comment: IssueComment,
@@ -130,7 +136,7 @@ pub struct CommitAuthor {
 }
 
 /// Used for web-flows etc, that are on behalf of a given user
-type Commiter = CommitAuthor;
+type Committer = CommitAuthor;
 
 #[derive(Deserialize, Debug)]
 pub struct Commit {
@@ -139,7 +145,7 @@ pub struct Commit {
     pub distinct: bool,
     pub message: String,
     pub author: CommitAuthor,
-    pub committer: Commiter,
+    pub committer: Committer,
     pub url: URI,
 }
 
@@ -157,7 +163,7 @@ pub struct PushInstallation {
 
 #[derive(Deserialize, Debug)]
 pub struct PushPayload {
-    //ref: String,
+    pub r#ref: String,
     pub before: CommitSha,
     pub after: CommitSha,
     pub created: bool,
@@ -179,10 +185,10 @@ struct IssuePayload {
 }
 
 #[derive(Serialize, Deserialize, Debug)]
-// The values are lower case to match the exact string GH is sending
+#[serde(rename_all = "lowercase")]
 pub enum PermissionGrant {
-    read,  // GH read-only permission
-    write, // GH read-write permission
+    Read,  // GH read-only permission
+    Write, // GH read-write permission
 }
 
 // TODO consider making this a hashmap if no-access is implemented by omitting the key
@@ -236,6 +242,7 @@ pub struct GithubApp {
     pub html_url: URI,
     pub created_at: DateTime,
     pub updated_at: DateTime,
+    // TODO should we just use a HashMap to supports it's dynamic nature?
     //    pub permissions: HashMap<String, PermissionGrant>,
     pub permissions: InstallationPermissions,
     pub evens: Vec<String>,
@@ -278,7 +285,7 @@ pub struct Installation {
     pub html_url: URI,
     pub app_id: ID,
     pub target_id: ID,
-    pub target_type: String, // User .. OWNER?
+    pub target_type: OwnerType,
     pub permissions: InstallationPermissions,
     pub events: Vec<String>,
     //    pub created_at: DateTime, // Ignore! because they are delivered as timestamps
@@ -289,7 +296,7 @@ pub struct Installation {
 #[derive(Deserialize, Debug)]
 pub struct InstallationPayload {
     // FIXME create event-action enum
-    pub action: String,
+    pub action: GithubEventAction,
     pub installation: Installation,
     // in case of deleted installs there is no repository key
     pub repositories: Option<Vec<InstallationRepository>>,
@@ -481,7 +488,6 @@ pub fn create_issue_comment(
     }
 }
 
-// Status: TODO
 /// GET /repos/:owner/:repo/pulls/:pull_number/comments
 pub fn get_review_comments(
     token: &String,
@@ -492,21 +498,34 @@ pub fn get_review_comments(
         "https://api.github.com/repos/{}/pulls/{}/comments",
         nwo, pull_number
     );
-    perform_get(&token, url, AuthTokenType::Token);
-    None
+    // TODO replace naive conversion with proper error handling
+    let result = perform_get(&token, url, AuthTokenType::Token);
+    match result {
+        Ok(mut response) => {
+            println!("Request succeeded :D {:?}", response);
+            let data: Vec<ReviewComment> = response.json().expect("decoding comments failed");
+            println!("Data: {:?}", data);
+            Some(data)
+        }
+        Err(err) => {
+            println!("Request failed {:?}", err);
+            None
+        }
+    }
+}
+
+pub fn get_issue_batch(_token: &String) {
+    unimplemented!()
+}
+pub fn get_pull_requests(_token: &String, _nwo: &String) {
+    unimplemented!()
 }
 
 // Status: TODO
-fn get_issue_batch(token: &String) {}
-
-// Status: TODO
+//TODO paginate over all issues later
 pub fn get_all_issues(token: &String) {
-    //TODO paginate over all issues later
     get_issue_batch(&token);
 }
-
-// Status: TODO
-fn get_pull_requests(token: &String, nwo: &String) {}
 
 // Status: WIP (partially done)
 // GET /repos/:owner/:repo/pulls/comments
@@ -521,7 +540,7 @@ pub fn get_all_review_comments(token: &String, nwo: &NameWithOwner) -> Option<Ve
             if link_header.is_some() {
                 println!("link header: {:?}", link_header);
             }
-            let data: Vec<ReviewComment> = response.json().expect("die");
+            let data: Vec<ReviewComment> = response.json().expect("decoding comments failed");
             println!("Data: {:?}", data);
             Some(data)
         }
@@ -629,18 +648,19 @@ pub fn get_app(token: &String) -> Option<GithubApp> {
             }
         }
         Err(error) => {
-            println!("request failed. How do we get the error payload?");
+            println!("request failed. {:?}", error);
             return None;
         }
     }
 }
 
 /// GET /app/installations/:installation_id
-fn get_installation() -> () {}
+pub fn get_installation() -> () {}
 
 #[derive(Serialize, Debug)]
 struct CreateInstallationToken {
-    //    repository_ids: Vec<ID>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    repository_ids: Option<Vec<ID>>,
     permissions: HashMap<String, PermissionGrant>,
 }
 
@@ -684,7 +704,7 @@ pub fn create_check_suite(
             }
         }
         Err(error) => {
-            println!("request failed. How do we get the error payload?");
+            println!("request failed. {:?}", error);
             return None;
         }
     }
@@ -745,7 +765,7 @@ pub fn create_check_run(token: &String, nwo: &NameWithOwner, sha: CommitSha) -> 
             }
         }
         Err(error) => {
-            println!("request failed. How do we get the error payload?");
+            println!("Request failed. {:?}", error);
             return None;
         }
     }
@@ -753,14 +773,15 @@ pub fn create_check_run(token: &String, nwo: &NameWithOwner, sha: CommitSha) -> 
 
 /// POST /app/installations/:installation_id/access_tokens
 pub fn create_installation_token(jwt: String, installation_id: ID) -> Option<String> {
-    //    let permissions = [("checks".to_string(), PermissionGrant::write)] .iter() .cloned() .collect();
     let mut permissions = HashMap::new();
-    permissions.insert(String::from("checks"), PermissionGrant::write);
+    permissions.insert(String::from("checks"), PermissionGrant::Write);
 
-    //    let repository_ids = vec![];
+    // only allow a certain list of repositories. Not all
+    //    let repository_ids = Some(vec![]);
+    let repository_ids = None;
 
     let data = CreateInstallationToken {
-        //        repository_ids,
+        repository_ids,
         permissions,
     };
 
@@ -794,7 +815,7 @@ pub fn create_installation_token(jwt: String, installation_id: ID) -> Option<Str
             }
         }
         Err(error) => {
-            println!("request failed. How do we get the error payload?");
+            println!("Request failed. {:?}", error);
             return None;
         }
     }
