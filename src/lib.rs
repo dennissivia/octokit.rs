@@ -12,6 +12,9 @@ use std::time::{SystemTime, UNIX_EPOCH};
 
 use jsonwebtoken::{encode, Algorithm, Header};
 
+pub mod apps;
+pub mod webhooks;
+
 type ID = u64;
 type CommitSha = String;
 
