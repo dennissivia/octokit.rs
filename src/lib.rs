@@ -4,7 +4,6 @@ use reqwest::header::{ACCEPT, AUTHORIZATION, CONTENT_TYPE, LINK, USER_AGENT};
 use reqwest::Response;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
-use std::error::Error;
 use std::fmt;
 use std::fs::File;
 use std::io::prelude::*;
@@ -13,7 +12,9 @@ use std::time::{SystemTime, UNIX_EPOCH};
 use jsonwebtoken::{encode, Algorithm, Header};
 
 pub mod apps;
+pub mod error;
 pub mod webhooks;
+use error::OctokitError;
 
 type ID = u64;
 type CommitSha = String;
@@ -339,11 +340,6 @@ struct CreateComment {
     body: String,
 }
 
-#[derive(Debug)]
-pub struct OctokitError {
-    details: String,
-}
-
 #[derive(Deserialize, Debug)]
 pub struct InstallationToken {
     pub token: String,
@@ -351,50 +347,6 @@ pub struct InstallationToken {
     pub permissions: InstallationPermissions,
     // omitted if repository_ids is not set in the request
     pub repositories: Option<Vec<Repository>>,
-}
-
-impl OctokitError {
-    fn new(msg: &str) -> OctokitError {
-        OctokitError {
-            details: msg.to_string(),
-        }
-    }
-}
-
-impl fmt::Display for OctokitError {
-    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
-        write!(f, "{}", self.details)
-    }
-}
-
-impl std::error::Error for OctokitError {
-    fn description(&self) -> &str {
-        &self.details
-    }
-}
-
-impl From<serde_json::Error> for OctokitError {
-    fn from(err: serde_json::Error) -> Self {
-        OctokitError::new(err.description())
-    }
-}
-
-impl From<reqwest::Error> for OctokitError {
-    fn from(err: reqwest::Error) -> Self {
-        OctokitError::new(err.description())
-    }
-}
-
-impl From<hex::FromHexError> for OctokitError {
-    fn from(err: hex::FromHexError) -> Self {
-        OctokitError::new(err.description())
-    }
-}
-
-impl From<openssl::error::ErrorStack> for OctokitError {
-    fn from(err: openssl::error::ErrorStack) -> Self {
-        OctokitError::new(err.description())
-    }
 }
 
 fn perform_get(

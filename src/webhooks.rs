@@ -1,4 +1,4 @@
-use super::OctokitError;
+use crate::error::OctokitError;
 use openssl::hash::MessageDigest;
 use openssl::memcmp;
 use openssl::sign::Signer;
