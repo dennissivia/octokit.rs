@@ -385,6 +385,18 @@ impl From<reqwest::Error> for OctokitError {
     }
 }
 
+impl From<hex::FromHexError> for OctokitError {
+    fn from(err: hex::FromHexError) -> Self {
+        OctokitError::new(err.description())
+    }
+}
+
+impl From<openssl::error::ErrorStack> for OctokitError {
+    fn from(err: openssl::error::ErrorStack) -> Self {
+        OctokitError::new(err.description())
+    }
+}
+
 fn perform_get(
     token: &String,
     url: URI,
